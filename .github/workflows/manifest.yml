@@ -1,0 +1,44 @@
+name: Generate asset manifest
+
+# Regenerates manifest.txt on every push so the ZeoN menu only re-downloads changed assets.
+# paths-ignore on manifest.txt prevents the bot's own commit from re-triggering this workflow.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - manifest.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: asset-manifest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Generate manifest.txt
+        run: node .github/scripts/gen-manifest.mjs
+
+      - name: Commit manifest if changed
+        run: |
+          if [ -n "$(git status --porcelain manifest.txt)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add manifest.txt
+            git commit -m "chore: regenerate asset manifest [skip ci]"
+            git push
+          else
+            echo "manifest.txt is already up to date."
+          fi

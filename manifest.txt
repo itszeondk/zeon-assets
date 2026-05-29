@@ -78,6 +78,7 @@ zeon/icons/hotkeys.gif 6da60bd801fb
 zeon/icons/house.png e27fcd58f8cc
 zeon/icons/hunter.png ea12763c55f5
 zeon/icons/image-solid.png ed160b6e479d
+zeon/icons/image.png c8841201d8dc
 zeon/icons/interrupts.png b70e7e7b5a82
 zeon/icons/keybinds.png 90e5a74bd685
 zeon/icons/keyboard-brightness.png 8345727c4474

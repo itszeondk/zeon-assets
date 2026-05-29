@@ -45,7 +45,7 @@ zeon/icons/arrow-up-from-dot.png 29b21d357020
 zeon/icons/arrow-up-right-and-arrow-down-left-from-center.png 9f9e03890a00
 zeon/icons/arrow-up-tray.png b76dd44d6788
 zeon/icons/auto-delete-rounded.png ee97515bfb22
-zeon/icons/automation.png 8e29e22d19d7
+zeon/icons/automation.png a8e461d49270
 zeon/icons/checkmark.png 7001269822f9
 zeon/icons/circle-info.png ccda7db2474f
 zeon/icons/circle-plus.png 61d1e1934c4b
@@ -75,6 +75,7 @@ zeon/icons/general.png 3da16bdb0fc5
 zeon/icons/globe-solid.png 3ca4cd98ad4d
 zeon/icons/globe.png 3ca4cd98ad4d
 zeon/icons/hotkeys.gif 6da60bd801fb
+zeon/icons/house.png e27fcd58f8cc
 zeon/icons/hunter.png ea12763c55f5
 zeon/icons/image-solid.png ed160b6e479d
 zeon/icons/interrupts.png b70e7e7b5a82
@@ -111,6 +112,7 @@ zeon/icons/rogue.png d5932ed747a4
 zeon/icons/save.png 0594d41216fb
 zeon/icons/scaling.gif 597632ae7a54
 zeon/icons/search.png fafdb9c77cf3
+zeon/icons/settings.png 9d96c2e25e11
 zeon/icons/shaman.png 665ffadc8782
 zeon/icons/share.png 3c5c11d5567a
 zeon/icons/sidebar.gif 066c5d90ea34

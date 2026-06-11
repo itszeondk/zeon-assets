@@ -149,6 +149,7 @@ zeon/pets.png 0fc1bda1f9e7
 zeon/pvp.png c2a7521d7c28
 zeon/racials.png bb5fd48d1294
 zeon/raids.png 36e97209a14c
+zeon/talents_leveling.png cd48c7b4d12f
 zeon/talents.png f7d87890471d
 zeon/target_selector.png db76e322c6cb
 zeon/trinkets.png dfdc14da19d9

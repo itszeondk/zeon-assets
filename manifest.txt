@@ -4,6 +4,7 @@ zeon/arrow_left.png 332cb3c40d6e
 zeon/arrow_right.png a761debbff1e
 zeon/arrow_up.png a519f864a927
 zeon/automation.png 8e29e22d19d7
+zeon/bm_hunter_leveling.png 6299db0dc597
 zeon/combat_forecast.png 93d57c22bd8b
 zeon/configs.png c8eed6ff63b5
 zeon/cooldowns.png 32bb221c0c12

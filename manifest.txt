@@ -3,9 +3,11 @@ zeon/arrow_down.png 0c329eb9a58b
 zeon/arrow_left.png 332cb3c40d6e
 zeon/arrow_right.png a761debbff1e
 zeon/arrow_up.png a519f864a927
+zeon/Assassination.png 51a2ea2c43e2
 zeon/automation.png 8e29e22d19d7
 zeon/bm_hunter_leveling.png 6299db0dc597
 zeon/combat_forecast.png 93d57c22bd8b
+zeon/Combat.png 7689e9fadc48
 zeon/configs.png c8eed6ff63b5
 zeon/cooldowns.png 32bb221c0c12
 zeon/defensives.png b6bc37b322fd
@@ -150,6 +152,7 @@ zeon/pets.png 0fc1bda1f9e7
 zeon/pvp.png c2a7521d7c28
 zeon/racials.png bb5fd48d1294
 zeon/raids.png 36e97209a14c
+zeon/Subtlety.png a16a882c538b
 zeon/talents_leveling.png cd48c7b4d12f
 zeon/talents_max_level.png c0940c6f401a
 zeon/talents.png f7d87890471d

@@ -111,6 +111,7 @@ zeon/icons/priest.png 858b4ca49121
 zeon/icons/pvp.png c2a7521d7c28
 zeon/icons/racials.png bb5fd48d1294
 zeon/icons/raids.png 36e97209a14c
+zeon/icons/Ranger.png 47d1eda116d3
 zeon/icons/refresh-rounded.png 1de3efb765bc
 zeon/icons/rogue.png d5932ed747a4
 zeon/icons/save.png 0594d41216fb

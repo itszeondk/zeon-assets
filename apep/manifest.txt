@@ -1,3 +1,4 @@
+Z-Rotations.enc fd19ec001b
 esp/dps.png f8869195bb
 esp/enemy_npc.png 1a75d41a3b
 esp/enemy_player.png 11ec7d2b89
@@ -155,4 +156,3 @@ icons/window_scale.tga d1c5539db8
 icons/zeon-nobg-light.tga fc11ccdd66
 icons/zeon-nobg.png 616f5e4ec8
 icons/zeon-nobg.tga aa7bad29df
-Z-Rotations.enc fd19ec001b

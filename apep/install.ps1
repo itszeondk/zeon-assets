@@ -1,4 +1,4 @@
-﻿# Z-Rotations installer. Run:  irm https://raw.githubusercontent.com/itszeondk/zeon-assets/main/apep/install.ps1 | iex
+# Z-Rotations installer. Run:  irm https://raw.githubusercontent.com/itszeondk/zeon-assets/main/apep/install.ps1 | iex
 # Downloads Z-Rotations.enc + UI assets and places them for Apep + WoW.
 Set-StrictMode -Version 2.0
 

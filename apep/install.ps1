@@ -453,6 +453,64 @@ function Get-ZRotInstallerXaml {
 '@
 }
 
+# GUI helper functions live at SCRIPT scope (not nested in Start-ZRotInstaller):
+# WPF event-handler script blocks run in a scope that cannot resolve nested
+# functions, so under `irm | iex` a Browse/Install click would fail with
+# "term is not recognized". They read the WPF controls through $script:z*
+# references that Start-ZRotInstaller populates before showing the window.
+function Write-ZRotLog {
+    param([string]$Message)
+    $stamp = Get-Date -Format 'HH:mm:ss'
+    $script:zLogBox.AppendText("[$stamp] $Message`r`n")
+    $script:zLogBox.ScrollToEnd()
+}
+
+function Set-ZRotStep {
+    param([string]$Stage)
+    if ($Stage -eq 'install' -or $Stage -eq 'done') {
+        $script:zStepDotInstall.Fill = $script:zAccentBrush
+        $script:zStepLabelInstall.Foreground = $script:zAccentBrush
+    }
+    if ($Stage -eq 'done') {
+        $script:zStepDotDone.Fill = $script:zAccentBrush
+        $script:zStepLabelDone.Foreground = $script:zAccentBrush
+    }
+}
+
+function Update-ApepStatus {
+    param([string]$Path)
+    $script:zApepPathBox.Text = $Path
+    if (Test-ApepDir $Path) {
+        $script:zApepGlyph.Text = $script:zCheckGlyph
+        $script:zApepGlyph.Foreground = $script:zSuccessBrush
+        return $true
+    } else {
+        $script:zApepGlyph.Text = $script:zCrossGlyph
+        $script:zApepGlyph.Foreground = $script:zErrorBrush
+        return $false
+    }
+}
+
+function Update-WowStatus {
+    param([string]$Path)
+    $script:zWowPathBox.Text = $Path
+    if (Test-WowDir $Path) {
+        $script:zWowGlyph.Text = $script:zCheckGlyph
+        $script:zWowGlyph.Foreground = $script:zSuccessBrush
+        return $true
+    } else {
+        $script:zWowGlyph.Text = $script:zCrossGlyph
+        $script:zWowGlyph.Foreground = $script:zErrorBrush
+        return $false
+    }
+}
+
+function Update-InstallEnabled {
+    $apepValid = Test-ApepDir $script:ZRotApepDir
+    $wowValid = Test-WowDir $script:ZRotWowDir
+    $script:zInstallButton.IsEnabled = ($apepValid -and $wowValid)
+}
+
 function Start-ZRotInstaller {
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
@@ -505,58 +563,24 @@ function Start-ZRotInstaller {
     $checkGlyph  = [string][char]0x2713
     $crossGlyph  = [string][char]0x2717
 
-    function Write-ZRotLog {
-        param([string]$Message)
-        $stamp = Get-Date -Format 'HH:mm:ss'
-        $logBox.AppendText("[$stamp] $Message`r`n")
-        $logBox.ScrollToEnd()
-    }
-
-    function Set-ZRotStep {
-        param([string]$Stage)
-        if ($Stage -eq 'install' -or $Stage -eq 'done') {
-            $stepDotInstall.Fill = $accentBrush
-            $stepLabelInstall.Foreground = $accentBrush
-        }
-        if ($Stage -eq 'done') {
-            $stepDotDone.Fill = $accentBrush
-            $stepLabelDone.Foreground = $accentBrush
-        }
-    }
-
-    function Update-ApepStatus {
-        param([string]$Path)
-        $apepPathBox.Text = $Path
-        if (Test-ApepDir $Path) {
-            $apepGlyph.Text = $checkGlyph
-            $apepGlyph.Foreground = $successBrush
-            return $true
-        } else {
-            $apepGlyph.Text = $crossGlyph
-            $apepGlyph.Foreground = $errorBrush
-            return $false
-        }
-    }
-
-    function Update-WowStatus {
-        param([string]$Path)
-        $wowPathBox.Text = $Path
-        if (Test-WowDir $Path) {
-            $wowGlyph.Text = $checkGlyph
-            $wowGlyph.Foreground = $successBrush
-            return $true
-        } else {
-            $wowGlyph.Text = $crossGlyph
-            $wowGlyph.Foreground = $errorBrush
-            return $false
-        }
-    }
-
-    function Update-InstallEnabled {
-        $apepValid = Test-ApepDir $script:ZRotApepDir
-        $wowValid = Test-WowDir $script:ZRotWowDir
-        $installButton.IsEnabled = ($apepValid -and $wowValid)
-    }
+    # Share the controls/brushes the top-level GUI helpers use into $script:
+    # scope so event-handler closures can drive them (see the helper functions
+    # defined above Start-ZRotInstaller).
+    $script:zLogBox = $logBox
+    $script:zApepPathBox = $apepPathBox
+    $script:zWowPathBox = $wowPathBox
+    $script:zApepGlyph = $apepGlyph
+    $script:zWowGlyph = $wowGlyph
+    $script:zInstallButton = $installButton
+    $script:zStepDotInstall = $stepDotInstall
+    $script:zStepLabelInstall = $stepLabelInstall
+    $script:zStepDotDone = $stepDotDone
+    $script:zStepLabelDone = $stepLabelDone
+    $script:zAccentBrush = $accentBrush
+    $script:zSuccessBrush = $successBrush
+    $script:zErrorBrush = $errorBrush
+    $script:zCheckGlyph = $checkGlyph
+    $script:zCrossGlyph = $crossGlyph
 
     # --- Initial detection ---
     $script:ZRotApepDir = Find-ApepDir

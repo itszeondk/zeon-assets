@@ -125,6 +125,8 @@ icons/movement.png 1eaf69c663
 icons/racials.png bb5fd48d12
 icons/ranger.png 47d1eda116
 icons/ranger.tga cb0c602d56
+icons/runemaster.png eca2e0508c
+icons/runemaster.tga 629c787a07
 icons/search.png fafdb9c77c
 icons/search.tga 22bea8fd0c
 icons/settings.png 9d96c2e25e

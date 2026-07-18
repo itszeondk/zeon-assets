@@ -512,6 +512,7 @@ function Update-InstallEnabled {
 }
 
 function Start-ZRotInstaller {
+    param([switch]$NoShow)  # $NoShow: build + wire the window but skip ShowDialog (tests)
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
     Add-Type -AssemblyName WindowsBase
@@ -530,8 +531,8 @@ function Start-ZRotInstaller {
     $wowGlyph       = $window.FindName('WowGlyph')
     $browseApepBtn  = $window.FindName('BrowseApepButton')
     $browseWowBtn   = $window.FindName('BrowseWowButton')
-    $installButton  = $window.FindName('InstallButton')
-    $installProgress = $window.FindName('InstallProgress')
+    $script:zInstallButton  = $window.FindName('InstallButton')
+    $script:zInstallProgress = $window.FindName('InstallProgress')
     $logBox         = $window.FindName('LogBox')
     $versionText    = $window.FindName('VersionText')
     $stepDotInstall = $window.FindName('StepDotInstall')
@@ -571,7 +572,6 @@ function Start-ZRotInstaller {
     $script:zWowPathBox = $wowPathBox
     $script:zApepGlyph = $apepGlyph
     $script:zWowGlyph = $wowGlyph
-    $script:zInstallButton = $installButton
     $script:zStepDotInstall = $stepDotInstall
     $script:zStepLabelInstall = $stepLabelInstall
     $script:zStepDotDone = $stepDotDone
@@ -636,7 +636,7 @@ function Start-ZRotInstaller {
             else { Write-ZRotLog "Selected folder does not look like an Apep install: $script:ZRotApepDir" }
             Save-ZRotInstallerConfig $script:ZRotApepDir $script:ZRotWowDir
         }
-    }.GetNewClosure())
+    })
 
     $browseWowBtn.Add_Click({
         $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -651,11 +651,11 @@ function Start-ZRotInstaller {
             else { Write-ZRotLog "Selected folder does not look like a WoW install: $script:ZRotWowDir" }
             Save-ZRotInstallerConfig $script:ZRotApepDir $script:ZRotWowDir
         }
-    }.GetNewClosure())
+    })
 
     # --- Install / Update handler ---
-    $installButton.Add_Click({
-        $installButton.IsEnabled = $false
+    $script:zInstallButton.Add_Click({
+        $script:zInstallButton.IsEnabled = $false
         try {
             if (-not (Test-ApepDir $script:ZRotApepDir)) {
                 Write-ZRotLog 'Cannot install: Apep folder is not valid.'
@@ -667,7 +667,7 @@ function Start-ZRotInstaller {
             }
 
             Set-ZRotStep 'install'
-            $installProgress.Value = 0
+            $script:zInstallProgress.Value = 0
             Write-ZRotLog 'Fetching manifest...'
 
             $manifestUrl = Get-ZRotRemoteUrl 'manifest.txt'
@@ -696,20 +696,20 @@ function Start-ZRotInstaller {
             if ($relList.Count -eq 0) {
                 Write-ZRotLog 'Already up to date.'
                 Set-ZRotStep 'done'
-                $installProgress.Value = 100
+                $script:zInstallProgress.Value = 100
                 return
             }
 
-            $installProgress.Maximum = $relList.Count
+            $script:zInstallProgress.Maximum = $relList.Count
             Write-ZRotLog "Installing $($relList.Count) file(s)..."
 
             $progressHandler = {
                 param($i, $t, $rel, $ok)
-                $installProgress.Value = $i
+                $script:zInstallProgress.Value = $i
                 if ($ok) { Write-ZRotLog "  OK   $rel" }
                 else { Write-ZRotLog "  FAIL $rel" }
                 [System.Windows.Forms.Application]::DoEvents()
-            }.GetNewClosure()
+            }
 
             $result = Invoke-ZRotApply $remote $relList $script:ZRotApepDir $script:ZRotWowDir $progressHandler
 
@@ -726,8 +726,9 @@ function Start-ZRotInstaller {
         } finally {
             Update-InstallEnabled
         }
-    }.GetNewClosure())
+    })
 
+    if ($NoShow) { return $window }
     $window.ShowDialog() | Out-Null
 }
 

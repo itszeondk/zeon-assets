@@ -1,0 +1,36 @@
+name: Generate apep manifest
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "apep/**"
+      - "!apep/manifest.txt"
+permissions:
+  contents: write
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build apep/manifest.txt
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib
+          base = pathlib.Path("apep")
+          exts = {".png", ".tga", ".ttf", ".txt", ".enc"}
+          exclude = {"manifest.txt", "install.ps1"}
+          lines = []
+          for p in sorted(base.rglob("*")):
+              if p.is_file() and (p.suffix.lower() in exts) and (p.name not in exclude):
+                  h = hashlib.sha1(p.read_bytes()).hexdigest()[:10]
+                  lines.append(f"{p.relative_to(base).as_posix()} {h}")
+          (base / "manifest.txt").write_text("\n".join(lines) + "\n", newline="\n")
+          print(f"wrote {len(lines)} entries")
+          PY
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add apep/manifest.txt
+          git diff --cached --quiet || git commit -m "chore: regenerate apep/manifest.txt"
+          git push

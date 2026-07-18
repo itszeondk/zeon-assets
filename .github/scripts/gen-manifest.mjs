@@ -17,7 +17,7 @@ const MANIFEST_NAME = "manifest.txt";
 const HASH_LEN = 12;
 
 // Directories never walked (VCS + CI tooling). Add more here if needed.
-const SKIP_DIRS = new Set([".git", ".github", "node_modules"]);
+const SKIP_DIRS = new Set([".git", ".github", "node_modules", "apep"]);
 // Files excluded from the manifest (docs + the manifest itself).
 const SKIP_FILES = new Set([MANIFEST_NAME, "README.md", "LICENSE", ".gitignore", ".gitattributes"]);
 

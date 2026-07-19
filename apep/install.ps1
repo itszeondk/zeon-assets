@@ -2,12 +2,17 @@
 # Downloads Z-Rotations.enc + UI assets and places them for Apep + WoW.
 Set-StrictMode -Version 2.0
 
-$ZRotInstaller_Version = '0.1.0'
+$ZRotInstaller_Version = '0.2.0'
 $ZRotInstaller_Loaded  = $true
 
 $script:BaseUrl      = 'https://raw.githubusercontent.com/itszeondk/zeon-assets/main/'
 $script:SubFolder    = 'apep/'
 $script:ManifestPath = 'apep/manifest.txt'
+$script:MmapsBuild = '335'
+$script:MmapsDescriptorUrl = 'https://raw.githubusercontent.com/itszeondk/zeon-assets/main/apep/mmaps-335.json'
+$script:MmapsReceiptName = '.zrot-mmaps-receipt.json'
+$script:ZRotInstallInProgress = $false
+$script:ZRotSuppressConfigWrites = $false
 
 # --- Task 2: core logic functions ---
 
@@ -39,21 +44,50 @@ function ConvertFrom-ZRotManifest {
     foreach ($line in ($Text -split "`r?`n")) {
         $t = $line.Trim()
         if ($t -eq '' -or $t.StartsWith('#')) { continue }
-        if ($t -match '^(\S+)\s+(\S+)$') {
-            $map[($matches[1] -replace '\\','/')] = $matches[2]
-        }
+        if ($t -notmatch '^(\S+)\s+([0-9a-fA-F]{10})$') { throw 'Asset manifest contains a malformed line.' }
+        $rel = ConvertTo-ZRotSafeRelativePath $matches[1]
+        if ($map.ContainsKey($rel)) { throw 'Asset manifest contains a duplicate path.' }
+        $map[$rel] = $matches[2].ToLowerInvariant()
     }
     return $map
 }
 
+function ConvertTo-ZRotSafeRelativePath {
+    param([string]$Rel)
+    if ([string]::IsNullOrWhiteSpace($Rel)) { throw 'Asset manifest path is empty.' }
+    $normalized = $Rel -replace '\\','/'
+    if ($normalized.Length -gt 240 -or $normalized.StartsWith('/') -or
+        $normalized.Contains(':') -or $normalized -notmatch '^[A-Za-z0-9._/-]+$') {
+        throw 'Asset manifest contains an unsafe path.'
+    }
+    $segments = @($normalized -split '/')
+    if ($segments.Count -eq 0) { throw 'Asset manifest contains an unsafe path.' }
+    foreach ($segment in $segments) {
+        if ([string]::IsNullOrEmpty($segment) -or $segment -eq '.' -or $segment -eq '..' -or $segment.EndsWith('.')) {
+            throw 'Asset manifest contains an unsafe path.'
+        }
+    }
+    $extension = [System.IO.Path]::GetExtension($normalized).ToLowerInvariant()
+    if (@('.png', '.tga', '.ttf', '.txt', '.enc') -notcontains $extension) {
+        throw 'Asset manifest contains an unsupported file type.'
+    }
+    return $normalized
+}
+
+function Test-ZRotManifestComplete {
+    param([hashtable]$Manifest)
+    return ($null -ne $Manifest -and $Manifest.Count -gt 0 -and $Manifest.ContainsKey('Z-Rotations.enc'))
+}
+
 function Get-ZRotRemoteUrl {
     param([string]$Rel)
-    return $script:BaseUrl + $script:SubFolder + ($Rel -replace '\\','/')
+    $rel = ConvertTo-ZRotSafeRelativePath $Rel
+    return $script:BaseUrl + $script:SubFolder + $rel
 }
 
 function Get-ZRotDestination {
     param([string]$Rel, [string]$ApepDir, [string]$WowDir)
-    $rel = $Rel -replace '\\','/'
+    $rel = ConvertTo-ZRotSafeRelativePath $Rel
     $ext = [System.IO.Path]::GetExtension($rel).ToLowerInvariant()
     if ($ext -eq '.tga') {
         $stem = [System.IO.Path]::GetFileNameWithoutExtension($rel)
@@ -93,9 +127,9 @@ function Get-ZRotMissingApepItems {
     $requiredItems = @('Apep.exe', 'Apep.json', 'rotations')
     if ([string]::IsNullOrWhiteSpace($Path)) { return $requiredItems }
 
-    foreach ($item in $requiredItems) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Path $item))) { $item }
-    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path 'Apep.exe') -PathType Leaf)) { 'Apep.exe' }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path 'Apep.json') -PathType Leaf)) { 'Apep.json' }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path 'rotations') -PathType Container)) { 'rotations' }
 }
 
 function Test-ApepDir {
@@ -107,7 +141,7 @@ function Test-ApepDir {
 function Test-WowDir {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return (Test-Path -LiteralPath (Join-Path $Path 'Interface'))
+    return (Test-Path -LiteralPath (Join-Path $Path 'Interface') -PathType Container)
 }
 
 function Find-ApepDir {
@@ -120,19 +154,25 @@ function Find-ApepDir {
 }
 
 function Save-ZRotFile {
-    param([string]$Url, [string]$Dest)
+    param([string]$Url, [string]$Dest, [string]$ExpectedSha1Short)
+    $old = $ProgressPreference
     try {
         $dir = Split-Path -Parent $Dest
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
         $tmp = "$Dest.tmp"
-        $old = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $Url -OutFile $tmp -UseBasicParsing
-        $ProgressPreference = $old
+        Enable-ZRotTls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Url -OutFile $tmp -UseBasicParsing | Out-Null
+        if ($ExpectedSha1Short -notmatch '^[0-9a-fA-F]{10}$' -or (Get-Sha1Short $tmp) -cne $ExpectedSha1Short.ToLowerInvariant()) {
+            throw 'Downloaded asset failed manifest hash verification.'
+        }
         Move-Item -LiteralPath $tmp -Destination $Dest -Force
         return $true
     } catch {
         if (Test-Path -LiteralPath "$Dest.tmp") { Remove-Item -LiteralPath "$Dest.tmp" -Force -ErrorAction SilentlyContinue }
         return $false
+    } finally {
+        $ProgressPreference = $old
     }
 }
 
@@ -143,7 +183,7 @@ function Invoke-ZRotApply {
         $i++
         $url = Get-ZRotRemoteUrl $rel
         $dest = Get-ZRotDestination $rel $ApepDir $WowDir
-        $good = Save-ZRotFile $url $dest
+        $good = Save-ZRotFile $url $dest $Remote[$rel]
         if ($good) { $ok++ } else { $failed += $rel }
         if ($OnProgress) { & $OnProgress $i $total $rel $good }
     }
@@ -158,6 +198,7 @@ function Get-ZRotConfigPath {
 
 function Save-ZRotInstallerConfig {
     param([string]$ApepDir, [string]$WowDir)
+    if ($env:ZROT_TEST -or $script:ZRotSuppressConfigWrites) { return }
     try {
         $cfgPath = Get-ZRotConfigPath
         $cfgDir = Split-Path -Parent $cfgPath
@@ -179,6 +220,737 @@ function Read-ZRotInstallerConfig {
     }
 }
 
+# --- Optional MMAPS release installer ---
+
+function ConvertTo-ZRotPositiveInt64 {
+    param($Value, [string]$Name, [switch]$AllowZero)
+    [long]$number = 0
+    if (-not [long]::TryParse([string]$Value, [ref]$number)) {
+        throw "MMAPS descriptor field '$Name' must be an integer."
+    }
+    if (($AllowZero -and $number -lt 0) -or (-not $AllowZero -and $number -le 0)) {
+        throw "MMAPS descriptor field '$Name' is outside the allowed range."
+    }
+    return $number
+}
+
+function ConvertFrom-ZRotMmapsDescriptor {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 65536) {
+        throw 'MMAPS descriptor is empty or too large.'
+    }
+    try {
+        $raw = $Text | ConvertFrom-Json
+    } catch {
+        throw 'MMAPS descriptor is not valid JSON.'
+    }
+
+    $required = @(
+        'schemaVersion', 'build', 'archiveUrl', 'archiveSha256',
+        'archiveBytes', 'payloadBytes', 'mmapCount', 'mmtileCount',
+        'mmapFileBytes', 'mmtileHeaderBytes', 'mmtileHeaderHex',
+        'detourVersion', 'mmapVersion', 'useLiquids'
+    )
+    foreach ($name in $required) {
+        if ($null -eq $raw.PSObject.Properties[$name]) {
+            throw "MMAPS descriptor is missing '$name'."
+        }
+    }
+
+    $schemaVersion = ConvertTo-ZRotPositiveInt64 $raw.schemaVersion 'schemaVersion'
+    if ($schemaVersion -ne 1) { throw 'Unsupported MMAPS descriptor schema.' }
+    $build = [string]$raw.build
+    if ($build -cne $script:MmapsBuild) { throw 'MMAPS descriptor targets an unexpected game build.' }
+
+    $archiveUrl = [string]$raw.archiveUrl
+    try { $archiveUri = New-Object System.Uri($archiveUrl) } catch { throw 'MMAPS archive URL is invalid.' }
+    if (-not $archiveUri.IsAbsoluteUri -or $archiveUri.Scheme -cne 'https') {
+        throw 'MMAPS archive URL must use HTTPS.'
+    }
+    if ($archiveUri.Host -ine 'github.com' -or -not $archiveUri.IsDefaultPort -or -not [string]::IsNullOrEmpty($archiveUri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($archiveUri.Query) -or -not [string]::IsNullOrEmpty($archiveUri.Fragment)) {
+        throw 'MMAPS archive URL must be a credential-free GitHub release URL.'
+    }
+    if ($archiveUri.AbsolutePath -notmatch '^/itszeondk/zeon-assets/releases/download/[^/]+/mmaps-335\.zip$' -or
+        $archiveUri.AbsolutePath -match '/releases/download/latest/') {
+        throw 'MMAPS archive URL must pin a specific zeon-assets release.'
+    }
+
+    $archiveSha256 = ([string]$raw.archiveSha256).ToLowerInvariant()
+    if ($archiveSha256 -notmatch '^[0-9a-f]{64}$') { throw 'MMAPS archive SHA-256 is invalid.' }
+    $archiveBytes = ConvertTo-ZRotPositiveInt64 $raw.archiveBytes 'archiveBytes'
+    $payloadBytes = ConvertTo-ZRotPositiveInt64 $raw.payloadBytes 'payloadBytes'
+    $mmapCount = ConvertTo-ZRotPositiveInt64 $raw.mmapCount 'mmapCount'
+    $mmtileCount = ConvertTo-ZRotPositiveInt64 $raw.mmtileCount 'mmtileCount'
+    $mmapFileBytes = ConvertTo-ZRotPositiveInt64 $raw.mmapFileBytes 'mmapFileBytes'
+    $mmtileHeaderBytes = ConvertTo-ZRotPositiveInt64 $raw.mmtileHeaderBytes 'mmtileHeaderBytes'
+    $mmtileHeaderHex = ([string]$raw.mmtileHeaderHex).ToUpperInvariant()
+    $detourVersion = ConvertTo-ZRotPositiveInt64 $raw.detourVersion 'detourVersion'
+    $mmapVersion = ConvertTo-ZRotPositiveInt64 $raw.mmapVersion 'mmapVersion'
+
+    if ($mmapFileBytes -ne 28) { throw 'MMAPS descriptor has an unexpected .mmap record size.' }
+    if ($mmtileHeaderBytes -ne 20) { throw 'MMAPS descriptor has an unexpected .mmtile header size.' }
+    if ($mmtileHeaderHex -cne '50414D4D') { throw 'MMAPS descriptor has an unexpected .mmtile header.' }
+    if ($detourVersion -ne 7 -or $mmapVersion -ne 15) { throw 'MMAPS descriptor has unexpected navigation format versions.' }
+    if (-not ($raw.useLiquids -is [bool]) -or -not [bool]$raw.useLiquids) {
+        throw 'MMAPS descriptor must identify a liquid-enabled payload.'
+    }
+    if ($mmapCount -gt ([long]::MaxValue - $mmtileCount)) { throw 'MMAPS descriptor file counts overflow.' }
+
+    return [pscustomobject]@{
+        SchemaVersion = $schemaVersion
+        Build = $build
+        ArchiveUrl = $archiveUrl
+        ArchiveSha256 = $archiveSha256
+        ArchiveBytes = $archiveBytes
+        PayloadBytes = $payloadBytes
+        MmapCount = $mmapCount
+        MmtileCount = $mmtileCount
+        FileCount = $mmapCount + $mmtileCount
+        MmapFileBytes = $mmapFileBytes
+        MmtileHeaderBytes = $mmtileHeaderBytes
+        MmtileHeaderHex = $mmtileHeaderHex
+        DetourVersion = $detourVersion
+        MmapVersion = $mmapVersion
+        UseLiquids = $true
+    }
+}
+
+function Get-ZRotMmapsConfigState {
+    param([string]$JsonText)
+
+    $unsafe = [pscustomobject]@{ Safe = $false; HasValue = $false; Value = $null }
+    if ([string]::IsNullOrWhiteSpace($JsonText)) { return $unsafe }
+    try { $cfg = $JsonText | ConvertFrom-Json } catch { return $unsafe }
+
+    $settingsProperties = @($cfg.PSObject.Properties | Where-Object { $_.Name -ceq 'Settings' })
+    if ($settingsProperties.Count -ne 1 -or $null -eq $settingsProperties[0].Value) { return $unsafe }
+    $mmapProperties = @($settingsProperties[0].Value.PSObject.Properties | Where-Object { $_.Name -ceq 'mmaps' })
+    if ($mmapProperties.Count -ne 1 -or $null -eq $mmapProperties[0].Value -or
+        -not ($mmapProperties[0].Value -is [string])) { return $unsafe }
+
+    $pattern = '((?<!\\)"mmaps"\s*:\s*)("(?:\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\\x00-\x1F])*")'
+    $matchesFound = [regex]::Matches($JsonText, $pattern)
+    if ($matchesFound.Count -ne 1) { return $unsafe }
+    try { $decoded = $matchesFound[0].Groups[2].Value | ConvertFrom-Json } catch { return $unsafe }
+    if (-not ($decoded -is [string]) -or $decoded -cne [string]$mmapProperties[0].Value) { return $unsafe }
+
+    return [pscustomobject]@{
+        Safe = $true
+        HasValue = -not [string]::IsNullOrWhiteSpace([string]$decoded)
+        Value = [string]$decoded
+    }
+}
+
+function Resolve-ZRotMmapsTarget {
+    param([string]$ApepDir)
+
+    $defaultPath = [System.IO.Path]::GetFullPath((Join-Path $ApepDir ("mmaps\{0}" -f $script:MmapsBuild)))
+    $configPath = Join-Path $ApepDir 'Apep.json'
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        return [pscustomobject]@{ Path = $defaultPath; Source = 'default'; CanConfigure = $false }
+    }
+
+    try {
+        $state = Get-ZRotMmapsConfigState ([System.IO.File]::ReadAllText($configPath))
+    } catch {
+        return [pscustomobject]@{ Path = $defaultPath; Source = 'default'; CanConfigure = $false }
+    }
+    if (-not $state.Safe -or -not $state.HasValue) {
+        return [pscustomobject]@{ Path = $defaultPath; Source = 'default'; CanConfigure = $state.Safe }
+    }
+
+    try {
+        $candidate = [Environment]::ExpandEnvironmentVariables($state.Value)
+        if (-not [System.IO.Path]::IsPathRooted($candidate)) { $candidate = Join-Path $ApepDir $candidate }
+        $candidate = [System.IO.Path]::GetFullPath($candidate)
+        return [pscustomobject]@{ Path = $candidate; Source = 'Settings.mmaps'; CanConfigure = $true }
+    } catch {
+        return [pscustomobject]@{ Path = $defaultPath; Source = 'default'; CanConfigure = $state.Safe }
+    }
+}
+
+function Test-ZRotMmapsTargetSafety {
+    param([string]$TargetPath, [string]$ApepDir)
+
+    try {
+        $full = [System.IO.Path]::GetFullPath($TargetPath)
+        $root = [System.IO.Path]::GetPathRoot($full)
+        $apepFull = [System.IO.Path]::GetFullPath($ApepDir)
+    } catch {
+        return [pscustomobject]@{ Safe = $false; Path = $null; Reason = 'The MMAPS target path is invalid.' }
+    }
+    $trimChars = [char[]]@('\', '/')
+    if ([string]::IsNullOrWhiteSpace($root) -or
+        [string]::Equals($full.TrimEnd($trimChars), $root.TrimEnd($trimChars), [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($full.TrimEnd($trimChars), $apepFull.TrimEnd($trimChars), [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{ Safe = $false; Path = $full; Reason = 'The MMAPS target cannot be a drive root or the Apep root.' }
+    }
+    $ancestor = Split-Path -Parent $full
+    while (-not [string]::IsNullOrWhiteSpace($ancestor)) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $ancestorItem = Get-Item -LiteralPath $ancestor -Force
+            if (($ancestorItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return [pscustomobject]@{ Safe = $false; Path = $full; Reason = 'The MMAPS target is below a filesystem link or junction.' }
+            }
+        }
+        $nextAncestor = Split-Path -Parent $ancestor
+        if ([string]::IsNullOrWhiteSpace($nextAncestor) -or $nextAncestor -eq $ancestor) { break }
+        $ancestor = $nextAncestor
+    }
+    if (Test-Path -LiteralPath $full) {
+        $item = Get-Item -LiteralPath $full -Force
+        if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            return [pscustomobject]@{ Safe = $false; Path = $full; Reason = 'The existing MMAPS target is not a regular directory.' }
+        }
+        foreach ($child in Get-ChildItem -LiteralPath $full -Force) {
+            if ($child.PSIsContainer -or (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                return [pscustomobject]@{ Safe = $false; Path = $full; Reason = 'The existing MMAPS target contains directories or links.' }
+            }
+            $extension = $child.Extension.ToLowerInvariant()
+            if ($child.Name -cne $script:MmapsReceiptName -and $extension -ne '.mmap' -and $extension -ne '.mmtile') {
+                return [pscustomobject]@{ Safe = $false; Path = $full; Reason = 'The existing MMAPS target contains unrelated files.' }
+            }
+        }
+    }
+    return [pscustomobject]@{ Safe = $true; Path = $full; Reason = $null }
+}
+
+function Get-ZRotAvailableBytes {
+    param([string]$Path)
+    try {
+        $probe = [System.IO.Path]::GetFullPath($Path)
+        while (-not (Test-Path -LiteralPath $probe)) {
+            $parent = Split-Path -Parent $probe
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $probe) { return $null }
+            $probe = $parent
+        }
+        $root = [System.IO.Path]::GetPathRoot($probe)
+        return (New-Object System.IO.DriveInfo($root)).AvailableFreeSpace
+    } catch {
+        return $null
+    }
+}
+
+function Test-ZRotMmapsDiskSpace {
+    param($Descriptor, [string]$TargetPath, [switch]$IncludeArchive, [long]$AvailableBytes = -1)
+
+    [long]$required = $Descriptor.PayloadBytes
+    if ($IncludeArchive) {
+        if ($required -gt ([long]::MaxValue - $Descriptor.ArchiveBytes)) {
+            return [pscustomobject]@{ Known = $true; Enough = $false; RequiredBytes = [long]::MaxValue; AvailableBytes = $AvailableBytes }
+        }
+        $required += $Descriptor.ArchiveBytes
+    }
+    [long]$safety = [Math]::Max(67108864L, [long][Math]::Ceiling([double]$Descriptor.PayloadBytes * 0.05))
+    if ($required -gt ([long]::MaxValue - $safety)) { $required = [long]::MaxValue } else { $required += $safety }
+    if ($AvailableBytes -lt 0) {
+        $availableValue = Get-ZRotAvailableBytes $TargetPath
+        if ($null -eq $availableValue) {
+            return [pscustomobject]@{ Known = $false; Enough = $false; RequiredBytes = $required; AvailableBytes = $null }
+        }
+        $AvailableBytes = [long]$availableValue
+    }
+    return [pscustomobject]@{
+        Known = $true
+        Enough = ($AvailableBytes -ge $required)
+        RequiredBytes = $required
+        AvailableBytes = $AvailableBytes
+    }
+}
+
+function Get-ZRotSha256 {
+    param([string]$Path, [scriptblock]$OnProgress)
+
+    $item = Get-Item -LiteralPath $Path
+    $stream = [System.IO.File]::OpenRead($item.FullName)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $buffer = New-Object byte[] 4194304
+        [long]$processed = 0
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $null = $hasher.TransformBlock($buffer, 0, $read, $buffer, 0)
+            $processed += $read
+            if ($OnProgress) {
+                try { & $OnProgress $processed ([long]$item.Length) } catch { }
+            }
+        }
+        $empty = New-Object byte[] 0
+        $null = $hasher.TransformFinalBlock($empty, 0, 0)
+        return ([BitConverter]::ToString($hasher.Hash).Replace('-', '')).ToLowerInvariant()
+    } finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Test-ZRotMmapsArchive {
+    param([string]$ArchivePath, $Descriptor, [scriptblock]$OnHashProgress)
+
+    if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) { throw 'MMAPS archive is missing.' }
+    $archiveItem = Get-Item -LiteralPath $ArchivePath
+    if ([long]$archiveItem.Length -ne [long]$Descriptor.ArchiveBytes) { throw 'MMAPS archive byte count does not match its descriptor.' }
+    if ((Get-ZRotSha256 $ArchivePath $OnHashProgress) -cne $Descriptor.ArchiveSha256) { throw 'MMAPS archive failed SHA-256 verification.' }
+
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop | Out-Null
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $seen = @{}
+        $mapIds = @{}
+        $tileMapIds = @{}
+        [long]$payloadBytes = 0
+        [long]$mmapCount = 0
+        [long]$mmtileCount = 0
+        foreach ($entry in $zip.Entries) {
+            $name = [string]$entry.FullName
+            if ([string]::IsNullOrWhiteSpace($name) -or $name -cne [string]$entry.Name -or
+                $name.Contains('/') -or $name.Contains('\') -or $name.Contains(':') -or
+                $name -eq '.' -or $name -eq '..' -or [System.IO.Path]::IsPathRooted($name)) {
+                throw 'MMAPS archive contains a nested or unsafe entry.'
+            }
+            if ($seen.ContainsKey($name)) { throw 'MMAPS archive contains duplicate filenames.' }
+            $seen[$name] = $true
+            $extension = [System.IO.Path]::GetExtension($name).ToLowerInvariant()
+            if ($extension -eq '.mmap') {
+                if ($name -cnotmatch '^[0-9]{3}\.mmap$') { throw 'MMAPS archive contains an invalid .mmap filename.' }
+                $mapIds[$name.Substring(0, 3)] = $true
+                $mmapCount++
+                if ([long]$entry.Length -ne [long]$Descriptor.MmapFileBytes) { throw 'MMAPS archive contains an invalid .mmap record.' }
+            } elseif ($extension -eq '.mmtile') {
+                if ($name -cnotmatch '^[0-9]{7}\.mmtile$') { throw 'MMAPS archive contains an invalid .mmtile filename.' }
+                $tileMapIds[$name.Substring(0, 3)] = $true
+                $mmtileCount++
+                if ([long]$entry.Length -lt $Descriptor.MmtileHeaderBytes) { throw 'MMAPS archive contains a truncated .mmtile record.' }
+            } else {
+                throw 'MMAPS archive contains a file that is not .mmap or .mmtile.'
+            }
+            if ($payloadBytes -gt ([long]::MaxValue - [long]$entry.Length)) { throw 'MMAPS archive payload size overflow.' }
+            $payloadBytes += [long]$entry.Length
+        }
+        if ($mmapCount -ne $Descriptor.MmapCount -or $mmtileCount -ne $Descriptor.MmtileCount -or
+            ($mmapCount + $mmtileCount) -ne $Descriptor.FileCount) {
+            throw 'MMAPS archive file counts do not match its descriptor.'
+        }
+        foreach ($mapId in $tileMapIds.Keys) {
+            if (-not $mapIds.ContainsKey($mapId)) { throw 'MMAPS archive contains a tile without its map header.' }
+        }
+        if ($payloadBytes -ne $Descriptor.PayloadBytes) { throw 'MMAPS archive payload bytes do not match its descriptor.' }
+        return [pscustomobject]@{ FileCount = $mmapCount + $mmtileCount; PayloadBytes = $payloadBytes }
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Invoke-ZRotMmapsProgress {
+    param([scriptblock]$OnProgress, [int]$Percent, [string]$Status)
+    if ($OnProgress) {
+        try { & $OnProgress $Percent $Status } catch { }
+    }
+}
+
+function Invoke-ZRotMmapsLog {
+    param([scriptblock]$OnLog, [string]$Message)
+    if ($OnLog) {
+        try { & $OnLog $Message } catch { }
+    }
+}
+
+function Expand-ZRotMmapsArchiveStaged {
+    param([string]$ArchivePath, [string]$StagePath, $Descriptor, [scriptblock]$OnProgress)
+
+    if (Test-Path -LiteralPath $StagePath) { throw 'MMAPS staging directory already exists.' }
+    New-Item -ItemType Directory -Path $StagePath -Force | Out-Null
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $index = 0
+        [long]$extractedBytes = 0
+        $buffer = New-Object byte[] 1048576
+        foreach ($entry in $zip.Entries) {
+            $index++
+            $destination = Join-Path $StagePath $entry.Name
+            $input = $entry.Open()
+            $output = $null
+            try {
+                $output = [System.IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                [long]$entryBytes = 0
+                while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    if ($entryBytes -gt ([long]$entry.Length - $read) -or
+                        $extractedBytes -gt ([long]$Descriptor.PayloadBytes - $read)) {
+                        throw 'MMAPS archive expanded beyond its declared payload size.'
+                    }
+                    $output.Write($buffer, 0, $read)
+                    $entryBytes += $read
+                    $extractedBytes += $read
+                }
+                if ($entryBytes -ne [long]$entry.Length) { throw 'MMAPS archive entry extracted to an unexpected size.' }
+            } finally {
+                if ($output) { $output.Dispose() }
+                $input.Dispose()
+            }
+            $percent = 55 + [int][Math]::Floor((35.0 * $index) / [Math]::Max(1, $Descriptor.FileCount))
+            Invoke-ZRotMmapsProgress $OnProgress $percent ("Extracting MMAPS ({0}/{1})" -f $index, $Descriptor.FileCount)
+        }
+        if ($extractedBytes -ne [long]$Descriptor.PayloadBytes) { throw 'MMAPS archive extracted to an unexpected total size.' }
+    } catch {
+        if (Test-Path -LiteralPath $StagePath) { Remove-Item -LiteralPath $StagePath -Recurse -Force -ErrorAction SilentlyContinue }
+        throw
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Test-ZRotMmapsPayload {
+    param([string]$PayloadPath, $Descriptor)
+
+    if (-not (Test-Path -LiteralPath $PayloadPath -PathType Container)) { throw 'MMAPS payload directory is missing.' }
+    [long]$payloadBytes = 0
+    [long]$mmapCount = 0
+    [long]$mmtileCount = 0
+    $mapIds = @{}
+    $tileMapIds = @{}
+    foreach ($item in Get-ChildItem -LiteralPath $PayloadPath -Force) {
+        if ($item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'MMAPS payload must contain flat, regular files only.'
+        }
+        if ($item.Name -ceq $script:MmapsReceiptName) { continue }
+        $extension = $item.Extension.ToLowerInvariant()
+        if ($extension -eq '.mmap') {
+            if ($item.Name -cnotmatch '^[0-9]{3}\.mmap$') { throw 'MMAPS payload contains an invalid .mmap filename.' }
+            $mapIds[$item.Name.Substring(0, 3)] = $true
+            $mmapCount++
+            if ([long]$item.Length -ne [long]$Descriptor.MmapFileBytes) { throw 'MMAPS payload contains an invalid .mmap record.' }
+        } elseif ($extension -eq '.mmtile') {
+            if ($item.Name -cnotmatch '^[0-9]{7}\.mmtile$') { throw 'MMAPS payload contains an invalid .mmtile filename.' }
+            $tileMapIds[$item.Name.Substring(0, 3)] = $true
+            $mmtileCount++
+            if ([long]$item.Length -lt $Descriptor.MmtileHeaderBytes) { throw 'MMAPS payload contains a truncated .mmtile record.' }
+            $stream = [System.IO.File]::OpenRead($item.FullName)
+            try {
+                $header = New-Object byte[] 20
+                if ($stream.Read($header, 0, 20) -ne 20 -or
+                    ([BitConverter]::ToString($header, 0, 4).Replace('-', '')) -cne $Descriptor.MmtileHeaderHex -or
+                    [BitConverter]::ToUInt32($header, 4) -ne $Descriptor.DetourVersion -or
+                    [BitConverter]::ToUInt32($header, 8) -ne $Descriptor.MmapVersion -or
+                    [BitConverter]::ToUInt32($header, 12) -ne ([long]$item.Length - $Descriptor.MmtileHeaderBytes) -or
+                    [BitConverter]::ToUInt32($header, 16) -ne 1) {
+                    throw 'MMAPS payload contains a .mmtile with an invalid header.'
+                }
+            } finally {
+                $stream.Dispose()
+            }
+        } else {
+            throw 'MMAPS payload contains an unrelated file.'
+        }
+        if ($payloadBytes -gt ([long]::MaxValue - [long]$item.Length)) { throw 'MMAPS payload size overflow.' }
+        $payloadBytes += [long]$item.Length
+    }
+    if ($mmapCount -ne $Descriptor.MmapCount -or $mmtileCount -ne $Descriptor.MmtileCount -or
+        ($mmapCount + $mmtileCount) -ne $Descriptor.FileCount) {
+        throw 'MMAPS payload file counts do not match its descriptor.'
+    }
+    foreach ($mapId in $tileMapIds.Keys) {
+        if (-not $mapIds.ContainsKey($mapId)) { throw 'MMAPS payload contains a tile without its map header.' }
+    }
+    if ($payloadBytes -ne $Descriptor.PayloadBytes) { throw 'MMAPS payload byte count does not match its descriptor.' }
+    return [pscustomobject]@{ FileCount = $mmapCount + $mmtileCount; PayloadBytes = $payloadBytes }
+}
+
+function Write-ZRotMmapsReceipt {
+    param([string]$StagePath, $Descriptor)
+    $receipt = [ordered]@{
+        schemaVersion = 1
+        build = $Descriptor.Build
+        archiveUrl = $Descriptor.ArchiveUrl
+        archiveSha256 = $Descriptor.ArchiveSha256
+        payloadBytes = $Descriptor.PayloadBytes
+        mmapCount = $Descriptor.MmapCount
+        mmtileCount = $Descriptor.MmtileCount
+        installedAtUtc = [DateTime]::UtcNow.ToString('o')
+    }
+    $receiptPath = Join-Path $StagePath $script:MmapsReceiptName
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json), $encoding)
+}
+
+function Test-ZRotMmapsCurrent {
+    param([string]$TargetPath, $Descriptor)
+    $receiptPath = Join-Path $TargetPath $script:MmapsReceiptName
+    if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { return $false }
+    try {
+        $receipt = [System.IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
+        if ([string]$receipt.build -cne $Descriptor.Build -or
+            ([string]$receipt.archiveSha256).ToLowerInvariant() -cne $Descriptor.ArchiveSha256 -or
+            [long]$receipt.payloadBytes -ne $Descriptor.PayloadBytes -or
+            [long]$receipt.mmapCount -ne $Descriptor.MmapCount -or
+            [long]$receipt.mmtileCount -ne $Descriptor.MmtileCount) { return $false }
+        Test-ZRotMmapsPayload $TargetPath $Descriptor | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Publish-ZRotMmapsStage {
+    param([string]$StagePath, [string]$TargetPath, [string]$ApepDir)
+
+    $safety = Test-ZRotMmapsTargetSafety $TargetPath $ApepDir
+    if (-not $safety.Safe) { throw $safety.Reason }
+    $target = $safety.Path
+    $parent = Split-Path -Parent $target
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+
+    $backup = "$target.zrot-old-$([guid]::NewGuid().ToString('N'))"
+    $movedOld = $false
+    try {
+        if (Test-Path -LiteralPath $target) {
+            Move-Item -LiteralPath $target -Destination $backup
+            $movedOld = $true
+        }
+        Move-Item -LiteralPath $StagePath -Destination $target
+    } catch {
+        if ($movedOld -and -not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
+            Move-Item -LiteralPath $backup -Destination $target -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
+    $leftoverBackup = $null
+    if ($movedOld -and (Test-Path -LiteralPath $backup)) {
+        try { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction Stop } catch { $leftoverBackup = $backup }
+    }
+    return [pscustomobject]@{ TargetPath = $target; LeftoverBackup = $leftoverBackup }
+}
+
+function Install-ZRotMmapsArchive {
+    param([string]$ArchivePath, $Descriptor, [string]$TargetPath, [string]$ApepDir,
+          [scriptblock]$OnProgress, [scriptblock]$OnLog)
+
+    $safety = Test-ZRotMmapsTargetSafety $TargetPath $ApepDir
+    if (-not $safety.Safe) { throw $safety.Reason }
+    $space = Test-ZRotMmapsDiskSpace $Descriptor $safety.Path
+    if (-not $space.Known) { throw 'Unable to determine free disk space for the MMAPS target.' }
+    if (-not $space.Enough) {
+        throw ("Not enough disk space for MMAPS (need {0:N1} GB free; found {1:N1} GB)." -f
+            ($space.RequiredBytes / 1GB), ($space.AvailableBytes / 1GB))
+    }
+
+    Invoke-ZRotMmapsLog $OnLog 'Verifying the MMAPS archive size and full SHA-256...'
+    Invoke-ZRotMmapsProgress $OnProgress 50 'Verifying MMAPS archive'
+    $hashProgress = {
+        param($current, $total)
+        $percent = 50
+        if ($total -gt 0) { $percent = 50 + [int][Math]::Floor((4.0 * $current) / $total) }
+        Invoke-ZRotMmapsProgress $OnProgress $percent ("Verifying MMAPS SHA-256 ({0:N1}/{1:N1} GB)" -f ($current / 1GB), ($total / 1GB))
+    }.GetNewClosure()
+    Test-ZRotMmapsArchive $ArchivePath $Descriptor $hashProgress | Out-Null
+    Invoke-ZRotMmapsLog $OnLog 'MMAPS archive SHA-256 and manifest metadata verified.'
+
+    $parent = Split-Path -Parent $safety.Path
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $stage = Join-Path $parent ('.zrot-mmaps-stage-' + [guid]::NewGuid().ToString('N'))
+    try {
+        Invoke-ZRotMmapsLog $OnLog 'Extracting MMAPS into a staging directory...'
+        Expand-ZRotMmapsArchiveStaged $ArchivePath $stage $Descriptor $OnProgress
+        Invoke-ZRotMmapsLog $OnLog 'Validating staged MMAPS headers, counts, and bytes...'
+        Invoke-ZRotMmapsProgress $OnProgress 92 'Validating extracted MMAPS'
+        Test-ZRotMmapsPayload $stage $Descriptor | Out-Null
+        Write-ZRotMmapsReceipt $stage $Descriptor
+        Invoke-ZRotMmapsLog $OnLog ("Validated {0} MMAPS files ({1:N0} bytes)." -f $Descriptor.FileCount, $Descriptor.PayloadBytes)
+        Invoke-ZRotMmapsLog $OnLog 'Publishing the validated MMAPS directory...'
+        $published = Publish-ZRotMmapsStage $stage $safety.Path $ApepDir
+        Invoke-ZRotMmapsProgress $OnProgress 98 'Publishing MMAPS'
+        return $published
+    } finally {
+        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Set-ZRotApepMmapsPath {
+    param([string]$ApepDir, [string]$TargetPath)
+
+    $configPath = Join-Path $ApepDir 'Apep.json'
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Changed = $false; BackupPath = $null; Reason = 'Apep.json was not found.' }
+    }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($configPath)
+        $hadBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+        $text = [System.IO.File]::ReadAllText($configPath)
+        $state = Get-ZRotMmapsConfigState $text
+        if (-not $state.Safe) {
+            return [pscustomobject]@{ Success = $false; Changed = $false; BackupPath = $null; Reason = 'Settings.mmaps was not uniquely and safely editable.' }
+        }
+        if ($state.Value -ceq $TargetPath) {
+            return [pscustomobject]@{ Success = $true; Changed = $false; BackupPath = $null; Reason = $null }
+        }
+
+        $pattern = New-Object System.Text.RegularExpressions.Regex('((?<!\\)"mmaps"\s*:\s*)("(?:\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\\x00-\x1F])*")')
+        $encoded = ConvertTo-Json -InputObject ([string]$TargetPath) -Compress
+        $evaluator = [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Groups[1].Value + $encoded }
+        $newText = $pattern.Replace($text, $evaluator, 1)
+        $verify = Get-ZRotMmapsConfigState $newText
+        if (-not $verify.Safe -or $verify.Value -cne $TargetPath) {
+            return [pscustomobject]@{ Success = $false; Changed = $false; BackupPath = $null; Reason = 'Settings.mmaps replacement could not be verified.' }
+        }
+
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $backupPath = "$configPath.zrot-mmaps-$stamp.bak"
+        if (Test-Path -LiteralPath $backupPath) { $backupPath = "$configPath.zrot-mmaps-$stamp-$([guid]::NewGuid().ToString('N')).bak" }
+        $tempPath = "$configPath.zrot-mmaps-$([guid]::NewGuid().ToString('N')).tmp"
+        Copy-Item -LiteralPath $configPath -Destination $backupPath -ErrorAction Stop
+        try {
+            $encoding = New-Object System.Text.UTF8Encoding($hadBom)
+            [System.IO.File]::WriteAllText($tempPath, $newText, $encoding)
+            Move-Item -LiteralPath $tempPath -Destination $configPath -Force
+        } finally {
+            if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
+        }
+        return [pscustomobject]@{ Success = $true; Changed = $true; BackupPath = $backupPath; Reason = $null }
+    } catch {
+        return [pscustomobject]@{ Success = $false; Changed = $false; BackupPath = $null; Reason = 'Apep.json could not be updated safely.' }
+    }
+}
+
+function Enable-ZRotTls12 {
+    try {
+        $null = [System.Net.ServicePointManager]::SecurityProtocol =
+            [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+    } catch {
+        # A current Windows TLS default may already be in effect.
+    }
+}
+
+function Get-ZRotMmapsDescriptorText {
+    Enable-ZRotTls12
+    $request = [System.Net.HttpWebRequest]::Create($script:MmapsDescriptorUrl)
+    $request.Method = 'GET'
+    $request.UserAgent = 'Z-Rotations-Installer'
+    $request.AllowAutoRedirect = $true
+    $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+    $request.UseDefaultCredentials = $false
+    $request.PreAuthenticate = $false
+    $request.Timeout = 60000
+    $response = $null
+    $reader = $null
+    try {
+        $response = $request.GetResponse()
+        if ($response.ContentLength -gt 65536) { throw 'MMAPS descriptor is too large.' }
+        $reader = New-Object System.IO.StreamReader($response.GetResponseStream(), [Text.Encoding]::UTF8, $true)
+        $builder = New-Object System.Text.StringBuilder
+        $buffer = New-Object char[] 4096
+        while (($read = $reader.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            if ($builder.Length -gt (65536 - $read)) { throw 'MMAPS descriptor is too large.' }
+            $null = $builder.Append($buffer, 0, $read)
+        }
+        return $builder.ToString()
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+}
+
+function Save-ZRotMmapsDownload {
+    param([string]$Url, [string]$Destination, [long]$ExpectedBytes, [scriptblock]$OnProgress)
+
+    Enable-ZRotTls12
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $request.Method = 'GET'
+    $request.UserAgent = 'Z-Rotations-Installer'
+    $request.AllowAutoRedirect = $true
+    $request.UseDefaultCredentials = $false
+    $request.PreAuthenticate = $false
+    $request.Timeout = 60000
+    $request.ReadWriteTimeout = 600000
+    $response = $null
+    $input = $null
+    $output = $null
+    try {
+        $response = $request.GetResponse()
+        if ($response.ContentLength -ge 0 -and [long]$response.ContentLength -ne $ExpectedBytes) {
+            throw 'MMAPS server response size does not match the descriptor.'
+        }
+        $input = $response.GetResponseStream()
+        $output = [System.IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $buffer = New-Object byte[] 1048576
+        [long]$downloaded = 0
+        if ($OnProgress) { & $OnProgress 0 $ExpectedBytes }
+        while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $output.Write($buffer, 0, $read)
+            $downloaded += $read
+            if ($downloaded -gt $ExpectedBytes) { throw 'MMAPS download exceeded its declared size.' }
+            if ($OnProgress) { & $OnProgress $downloaded $ExpectedBytes }
+        }
+        $output.Flush()
+        if ($downloaded -ne $ExpectedBytes) { throw 'MMAPS download was incomplete.' }
+    } catch {
+        if ($output) { $output.Dispose(); $output = $null }
+        if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue }
+        throw
+    } finally {
+        if ($output) { $output.Dispose() }
+        if ($input) { $input.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+}
+
+function Invoke-ZRotMmapsInstall {
+    param([string]$ApepDir, [scriptblock]$OnProgress, [scriptblock]$OnLog)
+
+    Invoke-ZRotMmapsProgress $OnProgress 0 'Fetching MMAPS descriptor'
+    $descriptor = ConvertFrom-ZRotMmapsDescriptor (Get-ZRotMmapsDescriptorText)
+    Invoke-ZRotMmapsLog $OnLog ("MMAPS descriptor verified for build {0}." -f $descriptor.Build)
+    $resolved = Resolve-ZRotMmapsTarget $ApepDir
+    $safety = Test-ZRotMmapsTargetSafety $resolved.Path $ApepDir
+    if (-not $safety.Safe) { throw $safety.Reason }
+    Invoke-ZRotMmapsLog $OnLog ("MMAPS target: {0} ({1})." -f $safety.Path, $resolved.Source)
+    if (-not (Test-Path -LiteralPath (Join-Path $ApepDir 'NavSrv.exe') -PathType Leaf)) {
+        Invoke-ZRotMmapsLog $OnLog 'WARNING: NavSrv.exe was not found in the Apep folder; navigation will not work until it is installed.'
+    }
+
+    if (Test-ZRotMmapsCurrent $safety.Path $descriptor) {
+        Invoke-ZRotMmapsLog $OnLog 'MMAPS are already current; skipping the archive download.'
+        $configResult = Set-ZRotApepMmapsPath $ApepDir $safety.Path
+        Invoke-ZRotMmapsProgress $OnProgress 100 'MMAPS already current'
+        return [pscustomobject]@{ TargetPath = $safety.Path; AlreadyCurrent = $true; ConfigResult = $configResult; LeftoverBackup = $null }
+    }
+
+    $space = Test-ZRotMmapsDiskSpace $descriptor $safety.Path -IncludeArchive
+    if (-not $space.Known) { throw 'Unable to determine free disk space for the MMAPS target.' }
+    if (-not $space.Enough) {
+        throw ("Not enough disk space for MMAPS (need {0:N1} GB free; found {1:N1} GB)." -f
+            ($space.RequiredBytes / 1GB), ($space.AvailableBytes / 1GB))
+    }
+    Invoke-ZRotMmapsLog $OnLog ("Disk-space preflight passed ({0:N1} GB required)." -f ($space.RequiredBytes / 1GB))
+
+    $parent = Split-Path -Parent $safety.Path
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $archivePath = Join-Path $parent ('.zrot-mmaps-download-' + [guid]::NewGuid().ToString('N') + '.zip')
+    try {
+        Invoke-ZRotMmapsLog $OnLog ("Downloading one MMAPS release archive ({0:N1} GB compressed)." -f ($descriptor.ArchiveBytes / 1GB))
+        $downloadProgress = {
+            param($current, $total)
+            $percent = 2
+            if ($total -gt 0) { $percent = 2 + [int][Math]::Floor((48.0 * $current) / $total) }
+            Invoke-ZRotMmapsProgress $OnProgress $percent ("Downloading MMAPS ({0:N1}/{1:N1} GB)" -f ($current / 1GB), ($total / 1GB))
+        }.GetNewClosure()
+        Save-ZRotMmapsDownload $descriptor.ArchiveUrl $archivePath $descriptor.ArchiveBytes $downloadProgress
+        Invoke-ZRotMmapsLog $OnLog 'MMAPS archive download complete.'
+        $published = Install-ZRotMmapsArchive $archivePath $descriptor $safety.Path $ApepDir $OnProgress $OnLog
+        $configResult = Set-ZRotApepMmapsPath $ApepDir $published.TargetPath
+        Invoke-ZRotMmapsProgress $OnProgress 100 'MMAPS installed'
+        return [pscustomobject]@{
+            TargetPath = $published.TargetPath
+            AlreadyCurrent = $false
+            ConfigResult = $configResult
+            LeftoverBackup = $published.LeftoverBackup
+        }
+    } finally {
+        if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # --- Task 3: themed WPF GUI ---
 
 # Base64 PNG payload for the sidebar logo mark (media/zrotations/icons/zeon-nobg.png).
@@ -190,7 +962,7 @@ function Get-ZRotInstallerXaml {
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Z-Rotations Installer"
-        Width="760" Height="560" MinWidth="680" MinHeight="480"
+        Width="760" Height="620" MinWidth="680" MinHeight="540"
         WindowStartupLocation="CenterScreen"
         Background="#131519"
         FontFamily="Montserrat, Segoe UI Semibold"
@@ -342,6 +1114,43 @@ function Get-ZRotInstallerXaml {
             <Setter Property="AcceptsReturn" Value="True"/>
             <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
         </Style>
+
+        <Style x:Key="OptionalCheckBox" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource BrushText}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="Box" Width="14" Height="14" CornerRadius="2"
+                                    Background="{StaticResource BrushInput}"
+                                    BorderBrush="{StaticResource BrushMuted}" BorderThickness="1">
+                                <TextBlock x:Name="Mark" Text="&#x2713;" FontSize="11" FontWeight="Bold"
+                                           Foreground="{StaticResource BrushText}" HorizontalAlignment="Center"
+                                           VerticalAlignment="Center" Visibility="Collapsed"/>
+                            </Border>
+                            <ContentPresenter Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Box" Property="Background" Value="{StaticResource BrushAccent}"/>
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource BrushAccent}"/>
+                                <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource BrushAccent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -407,6 +1216,7 @@ function Get-ZRotInstallerXaml {
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
@@ -443,13 +1253,23 @@ function Get-ZRotInstallerXaml {
                 </Grid>
             </Border>
 
-            <Button x:Name="InstallButton" Grid.Row="2" Content="Install" Style="{StaticResource AccentButton}"
+            <Border Grid.Row="2" Background="{StaticResource BrushCard}" BorderBrush="{StaticResource BrushBorder}"
+                    BorderThickness="1" CornerRadius="3" Padding="14,11" Margin="0,14,0,0">
+                <StackPanel>
+                    <CheckBox x:Name="InstallMmapsCheckBox" IsChecked="False" Style="{StaticResource OptionalCheckBox}"
+                              Content="Download MMAPS navigation data (optional)"/>
+                    <TextBlock Text="Large download for build 335. Installs verified pathfinding maps and configures Apep."
+                               FontSize="10" Foreground="{StaticResource BrushMuted}" Margin="20,5,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
+            <Button x:Name="InstallButton" Grid.Row="3" Content="Install" Style="{StaticResource AccentButton}"
                     HorizontalAlignment="Right" Margin="0,18,0,0" MinWidth="180"/>
 
-            <ProgressBar x:Name="InstallProgress" Grid.Row="3" Style="{StaticResource AccentProgressBar}"
+            <ProgressBar x:Name="InstallProgress" Grid.Row="4" Style="{StaticResource AccentProgressBar}"
                          Minimum="0" Maximum="100" Value="0" Margin="0,14,0,0"/>
 
-            <Border Grid.Row="4" Background="{StaticResource BrushInput}" BorderBrush="{StaticResource BrushBorder}"
+            <Border Grid.Row="5" Background="{StaticResource BrushInput}" BorderBrush="{StaticResource BrushBorder}"
                     BorderThickness="1" CornerRadius="3" Padding="10" Margin="0,14,0,0">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <TextBox x:Name="LogBox" Style="{StaticResource LogBoxStyle}"/>
@@ -516,11 +1336,21 @@ function Update-WowStatus {
 function Update-InstallEnabled {
     $apepValid = Test-ApepDir $script:ZRotApepDir
     $wowValid = Test-WowDir $script:ZRotWowDir
-    $script:zInstallButton.IsEnabled = ($apepValid -and $wowValid)
+    $script:zInstallButton.IsEnabled = (-not $script:ZRotInstallInProgress -and $apepValid -and $wowValid)
+}
+
+function Set-ZRotInstallBusy {
+    param([bool]$Busy)
+    $script:ZRotInstallInProgress = $Busy
+    $script:zMmapsCheckBox.IsEnabled = -not $Busy
+    $script:zBrowseApepButton.IsEnabled = -not $Busy
+    $script:zBrowseWowButton.IsEnabled = -not $Busy
+    Update-InstallEnabled
 }
 
 function Start-ZRotInstaller {
     param([switch]$NoShow)  # $NoShow: build + wire the window but skip ShowDialog (tests)
+    $script:ZRotSuppressConfigWrites = [bool]$NoShow
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
     Add-Type -AssemblyName WindowsBase
@@ -539,6 +1369,9 @@ function Start-ZRotInstaller {
     $wowGlyph       = $window.FindName('WowGlyph')
     $browseApepBtn  = $window.FindName('BrowseApepButton')
     $browseWowBtn   = $window.FindName('BrowseWowButton')
+    $script:zBrowseApepButton = $browseApepBtn
+    $script:zBrowseWowButton = $browseWowBtn
+    $script:zMmapsCheckBox = $window.FindName('InstallMmapsCheckBox')
     $script:zInstallButton  = $window.FindName('InstallButton')
     $script:zInstallProgress = $window.FindName('InstallProgress')
     $logBox         = $window.FindName('LogBox')
@@ -632,6 +1465,7 @@ function Start-ZRotInstaller {
 
     # --- Browse handlers ---
     $browseApepBtn.Add_Click({
+        if ($script:ZRotInstallInProgress) { return }
         $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
         $dlg.Description = 'Select your Apep folder'
         if ($script:ZRotApepDir) { $dlg.SelectedPath = $script:ZRotApepDir }
@@ -650,6 +1484,7 @@ function Start-ZRotInstaller {
     })
 
     $browseWowBtn.Add_Click({
+        if ($script:ZRotInstallInProgress) { return }
         $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
         $dlg.Description = 'Select your World of Warcraft folder'
         if ($script:ZRotWowDir) { $dlg.SelectedPath = $script:ZRotWowDir }
@@ -666,13 +1501,16 @@ function Start-ZRotInstaller {
 
     # --- Install / Update handler ---
     $script:zInstallButton.Add_Click({
-        $script:zInstallButton.IsEnabled = $false
+        if ($script:ZRotInstallInProgress) { return }
+        $installApepDir = $script:ZRotApepDir
+        $installWowDir = $script:ZRotWowDir
+        Set-ZRotInstallBusy $true
         try {
-            if (-not (Test-ApepDir $script:ZRotApepDir)) {
+            if (-not (Test-ApepDir $installApepDir)) {
                 Write-ZRotLog 'Cannot install: Apep folder is not valid.'
                 return
             }
-            if (-not (Test-WowDir $script:ZRotWowDir)) {
+            if (-not (Test-WowDir $installWowDir)) {
                 Write-ZRotLog 'Cannot install: WoW folder is not valid.'
                 return
             }
@@ -694,10 +1532,29 @@ function Start-ZRotInstaller {
                 $ProgressPreference = $oldProgressPref
             }
 
-            $remote = ConvertFrom-ZRotManifest $manifestText
+            try {
+                $remote = ConvertFrom-ZRotManifest $manifestText
+            } catch {
+                Write-ZRotLog "Failed to validate manifest: $($_.Exception.Message)"
+                return
+            }
+            if (-not (Test-ZRotManifestComplete $remote)) {
+                Write-ZRotLog 'Failed to validate manifest: it is empty or missing Z-Rotations.enc.'
+                return
+            }
+
+            $destinations = @{}
+            foreach ($rel in $remote.Keys) {
+                $plannedDestination = Get-ZRotDestination $rel $installApepDir $installWowDir
+                if ($destinations.ContainsKey($plannedDestination)) {
+                    Write-ZRotLog 'Failed to validate manifest: multiple files map to the same destination.'
+                    return
+                }
+                $destinations[$plannedDestination] = $true
+            }
             $localHashes = @{}
             foreach ($rel in $remote.Keys) {
-                $dest = Get-ZRotDestination $rel $script:ZRotApepDir $script:ZRotWowDir
+                $dest = Get-ZRotDestination $rel $installApepDir $installWowDir
                 $hash = Get-Sha1Short $dest
                 if ($hash) { $localHashes[$rel] = $hash }
             }
@@ -705,37 +1562,73 @@ function Start-ZRotInstaller {
             $relList = @($plan.Install) + @($plan.Update)
 
             if ($relList.Count -eq 0) {
-                Write-ZRotLog 'Already up to date.'
-                Set-ZRotStep 'done'
+                Write-ZRotLog 'Z-Rotations is already up to date.'
+                $script:zInstallProgress.Maximum = 100
                 $script:zInstallProgress.Value = 100
-                return
+            } else {
+                $script:zInstallProgress.Maximum = $relList.Count
+                Write-ZRotLog "Installing $($relList.Count) Z-Rotations file(s)..."
+
+                $progressHandler = {
+                    param($i, $t, $rel, $ok)
+                    $script:zInstallProgress.Value = $i
+                    if ($ok) { Write-ZRotLog "  OK   $rel" }
+                    else { Write-ZRotLog "  FAIL $rel" }
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+
+                $result = Invoke-ZRotApply $remote $relList $installApepDir $installWowDir $progressHandler
+                Write-ZRotLog "Z-Rotations files complete. $($result.Ok) succeeded, $($result.Failed.Count) failed."
+                if ($result.Failed.Count -gt 0) {
+                    foreach ($f in $result.Failed) { Write-ZRotLog "  Failed: $f" }
+                    Write-ZRotLog 'Installation stopped because one or more files failed verification.'
+                    return
+                }
             }
 
-            $script:zInstallProgress.Maximum = $relList.Count
-            Write-ZRotLog "Installing $($relList.Count) file(s)..."
-
-            $progressHandler = {
-                param($i, $t, $rel, $ok)
-                $script:zInstallProgress.Value = $i
-                if ($ok) { Write-ZRotLog "  OK   $rel" }
-                else { Write-ZRotLog "  FAIL $rel" }
-                [System.Windows.Forms.Application]::DoEvents()
+            if ($script:zMmapsCheckBox.IsChecked -eq $true) {
+                Write-ZRotLog 'Starting optional MMAPS installation...'
+                $script:zInstallProgress.Minimum = 0
+                $script:zInstallProgress.Maximum = 100
+                $script:zInstallProgress.Value = 0
+                $mmapsProgress = {
+                    param($percent, $status)
+                    $script:zInstallProgress.Value = [Math]::Max(0, [Math]::Min(100, $percent))
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+                $mmapsLog = {
+                    param($message)
+                    Write-ZRotLog $message
+                    [System.Windows.Forms.Application]::DoEvents()
+                }
+                try {
+                    $mmapsResult = Invoke-ZRotMmapsInstall $installApepDir $mmapsProgress $mmapsLog
+                    if ($mmapsResult.ConfigResult.Success) {
+                        if ($mmapsResult.ConfigResult.Changed) {
+                            Write-ZRotLog "Configured Settings.mmaps; Apep.json backup: $($mmapsResult.ConfigResult.BackupPath)"
+                        } else {
+                            Write-ZRotLog 'Settings.mmaps already points at the installed maps.'
+                        }
+                    } else {
+                        Write-ZRotLog "WARNING: MMAPS installed, but $($mmapsResult.ConfigResult.Reason) Configure the path in Apep Settings."
+                    }
+                    if ($mmapsResult.LeftoverBackup) {
+                        Write-ZRotLog "WARNING: The previous MMAPS directory could not be removed: $($mmapsResult.LeftoverBackup)"
+                    }
+                    Write-ZRotLog "MMAPS ready: $($mmapsResult.TargetPath)"
+                } catch {
+                    Write-ZRotLog "MMAPS installation failed: $($_.Exception.Message)"
+                    return
+                }
             }
 
-            $result = Invoke-ZRotApply $remote $relList $script:ZRotApepDir $script:ZRotWowDir $progressHandler
-
-            Write-ZRotLog "Done. $($result.Ok) succeeded, $($result.Failed.Count) failed."
-            if ($result.Failed.Count -gt 0) {
-                foreach ($f in $result.Failed) { Write-ZRotLog "  Failed: $f" }
-            }
-
-            Update-ApepStatus $script:ZRotApepDir | Out-Null
-            Update-WowStatus $script:ZRotWowDir | Out-Null
+            Update-ApepStatus $installApepDir | Out-Null
+            Update-WowStatus $installWowDir | Out-Null
             Update-InstallEnabled
-            Save-ZRotInstallerConfig $script:ZRotApepDir $script:ZRotWowDir
+            Save-ZRotInstallerConfig $installApepDir $installWowDir
             Set-ZRotStep 'done'
         } finally {
-            Update-InstallEnabled
+            Set-ZRotInstallBusy $false
         }
     })
 

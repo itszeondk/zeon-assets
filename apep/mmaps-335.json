@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "build": "335",
+  "archiveUrl": "https://github.com/itszeondk/zeon-assets/releases/download/mmaps-335-v1/mmaps-335.zip",
+  "archiveSha256": "4DFD8862FD31696FC2B90D4981F60AFEF8B26637DFCF51AC2870AF7B22813E83",
+  "archiveBytes": 1259453341,
+  "payloadBytes": 3540244220,
+  "mmapCount": 99,
+  "mmtileCount": 3527,
+  "mmapFileBytes": 28,
+  "mmtileHeaderBytes": 20,
+  "mmtileHeaderHex": "50414D4D",
+  "detourVersion": 7,
+  "mmapVersion": 15,
+  "useLiquids": true,
+  "provenance": {
+    "generatorCommand": "mmaps_generator.exe --maxAngleNotSteep 50 --maxAngle 60 --skipLiquid false --skipContinents false --skipJunkMaps true --skipBattlegrounds false --bigBaseUnit false",
+    "generatorSha256": "DA68C5D04D28F64BB568B6D93D0C3227551A81687B9388A335D93A498EC1D97D",
+    "sourceArchive": "Data\\patch-B.MPQ",
+    "sourceArchiveSha256": "C48159C6D6DDE97ACA850A64B1EF423162F8969E0BB82F01E39BCE7E17C24B2E"
+  }
+}

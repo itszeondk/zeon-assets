@@ -88,12 +88,20 @@ function Get-ZRotPlan {
 
 # --- Task 3: apply engine + validators ---
 
+function Get-ZRotMissingApepItems {
+    param([string]$Path)
+    $requiredItems = @('Apep.exe', 'Apep.json', 'rotations')
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $requiredItems }
+
+    foreach ($item in $requiredItems) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Path $item))) { $item }
+    }
+}
+
 function Test-ApepDir {
     param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return (Test-Path -LiteralPath (Join-Path $Path 'Apep.exe')) -and
-           (Test-Path -LiteralPath (Join-Path $Path 'Apep.json')) -and
-           (Test-Path -LiteralPath (Join-Path $Path 'rotations'))
+    $missingItems = @(Get-ZRotMissingApepItems $Path)
+    return ($missingItems.Count -eq 0)
 }
 
 function Test-WowDir {
@@ -633,7 +641,10 @@ function Start-ZRotInstaller {
             $apepOk2 = Update-ApepStatus $script:ZRotApepDir
             Update-InstallEnabled
             if ($apepOk2) { Write-ZRotLog "Apep folder set: $script:ZRotApepDir" }
-            else { Write-ZRotLog "Selected folder does not look like an Apep install: $script:ZRotApepDir" }
+            else {
+                $missingItems = @(Get-ZRotMissingApepItems $script:ZRotApepDir)
+                Write-ZRotLog "Selected folder does not look like an Apep install (missing $($missingItems -join ', ')): $script:ZRotApepDir"
+            }
             Save-ZRotInstallerConfig $script:ZRotApepDir $script:ZRotWowDir
         }
     })

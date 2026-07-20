@@ -2,7 +2,7 @@
 # Downloads Z-Rotations.enc + UI assets and places them for Apep + WoW.
 Set-StrictMode -Version 2.0
 
-$ZRotInstaller_Version = '0.2.0'
+$ZRotInstaller_Version = '0.3.0'
 $ZRotInstaller_Loaded  = $true
 
 $script:BaseUrl      = 'https://raw.githubusercontent.com/itszeondk/zeon-assets/main/'
@@ -343,10 +343,28 @@ function Get-ZRotMmapsConfigState {
     }
 }
 
+# MMAPS live at the drive root, never inside the Apep folder: Apep/NavSrv hits
+# permission errors reading maps below the (typically user-profile) Apep
+# directory, which breaks navigation even though the files are present.
+function Get-ZRotMmapsDefaultPath {
+    $drive = $env:SystemDrive
+    if ([string]::IsNullOrWhiteSpace($drive)) { $drive = 'C:' }
+    return [System.IO.Path]::GetFullPath(("{0}\mmaps\{1}" -f $drive, $script:MmapsBuild))
+}
+
+function Test-ZRotPathInsideApep {
+    param([string]$Path, [string]$ApepDir)
+    $trimChars = [char[]]@('\', '/')
+    $apepFull = [System.IO.Path]::GetFullPath($ApepDir).TrimEnd($trimChars)
+    $candidate = [System.IO.Path]::GetFullPath($Path).TrimEnd($trimChars)
+    return [string]::Equals($candidate, $apepFull, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidate.StartsWith($apepFull + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Resolve-ZRotMmapsTarget {
     param([string]$ApepDir)
 
-    $defaultPath = [System.IO.Path]::GetFullPath((Join-Path $ApepDir ("mmaps\{0}" -f $script:MmapsBuild)))
+    $defaultPath = Get-ZRotMmapsDefaultPath
     $configPath = Join-Path $ApepDir 'Apep.json'
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         return [pscustomobject]@{ Path = $defaultPath; Source = 'default'; CanConfigure = $false }
@@ -365,6 +383,12 @@ function Resolve-ZRotMmapsTarget {
         $candidate = [Environment]::ExpandEnvironmentVariables($state.Value)
         if (-not [System.IO.Path]::IsPathRooted($candidate)) { $candidate = Join-Path $ApepDir $candidate }
         $candidate = [System.IO.Path]::GetFullPath($candidate)
+        # A configured path inside the Apep folder reproduces the NavSrv
+        # permission failure, so it is migrated to the drive-root default
+        # (Set-ZRotApepMmapsPath then persists the new location).
+        if (Test-ZRotPathInsideApep $candidate $ApepDir) {
+            return [pscustomobject]@{ Path = $defaultPath; Source = 'migrated-from-apep-folder'; CanConfigure = $true }
+        }
         return [pscustomobject]@{ Path = $candidate; Source = 'Settings.mmaps'; CanConfigure = $true }
     } catch {
         return [pscustomobject]@{ Path = $defaultPath; Source = 'default'; CanConfigure = $state.Safe }
@@ -905,6 +929,9 @@ function Invoke-ZRotMmapsInstall {
     $safety = Test-ZRotMmapsTargetSafety $resolved.Path $ApepDir
     if (-not $safety.Safe) { throw $safety.Reason }
     Invoke-ZRotMmapsLog $OnLog ("MMAPS target: {0} ({1})." -f $safety.Path, $resolved.Source)
+    if ($resolved.Source -ceq 'migrated-from-apep-folder') {
+        Invoke-ZRotMmapsLog $OnLog 'NOTE: MMAPS inside the Apep folder cause NavSrv permission errors, so the maps now install to the drive root and Apep.json is updated. The old mmaps folder under Apep can be deleted to reclaim disk space.'
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $ApepDir 'NavSrv.exe') -PathType Leaf)) {
         Invoke-ZRotMmapsLog $OnLog 'WARNING: NavSrv.exe was not found in the Apep folder; navigation will not work until it is installed.'
     }
@@ -1616,6 +1643,7 @@ function Start-ZRotInstaller {
                         Write-ZRotLog "WARNING: The previous MMAPS directory could not be removed: $($mmapsResult.LeftoverBackup)"
                     }
                     Write-ZRotLog "MMAPS ready: $($mmapsResult.TargetPath)"
+                    Write-ZRotLog 'IMPORTANT: Fully exit and restart Apep/Ascension so NavSrv loads the configured MMAPS path.'
                 } catch {
                     Write-ZRotLog "MMAPS installation failed: $($_.Exception.Message)"
                     return

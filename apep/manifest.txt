@@ -72,6 +72,7 @@ icons/esp_user-minus-solid.png 99ec76d41a
 icons/esp_user-minus-solid.tga daf1f6db23
 icons/esp_user-solid.png dba50076bd
 icons/esp_user-solid.tga e492677a0d
+icons/felworn.png fcbcd17740
 icons/forms.png 5bdfe9cf65
 icons/hotkey_arrow_down.png 0c329eb9a5
 icons/hotkey_arrow_down.tga 9a4987914c

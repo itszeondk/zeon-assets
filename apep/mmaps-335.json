@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "build": "335",
-  "archiveUrl": "https://github.com/itszeondk/zeon-assets/releases/download/mmaps-335-v1/mmaps-335.zip",
-  "archiveSha256": "4DFD8862FD31696FC2B90D4981F60AFEF8B26637DFCF51AC2870AF7B22813E83",
-  "archiveBytes": 1259453341,
-  "payloadBytes": 3540244220,
-  "mmapCount": 99,
-  "mmtileCount": 3527,
+  "archiveUrl": "https://github.com/itszeondk/zeon-assets/releases/download/mmaps-335-v2/mmaps-335.zip",
+  "archiveSha256": "A5481D730E68CF018D0D96C2499F4CA43AF6F6C993D80B4390DB3C6ED108CB57",
+  "archiveBytes": 1328147279,
+  "payloadBytes": 3732479748,
+  "mmapCount": 116,
+  "mmtileCount": 3926,
   "mmapFileBytes": 28,
   "mmtileHeaderBytes": 20,
   "mmtileHeaderHex": "50414D4D",
@@ -17,6 +17,7 @@
     "generatorCommand": "mmaps_generator.exe --maxAngleNotSteep 50 --maxAngle 60 --skipLiquid false --skipContinents false --skipJunkMaps true --skipBattlegrounds false --bigBaseUnit false",
     "generatorSha256": "DA68C5D04D28F64BB568B6D93D0C3227551A81687B9388A335D93A498EC1D97D",
     "sourceArchive": "Data\\patch-B.MPQ",
-    "sourceArchiveSha256": "C48159C6D6DDE97ACA850A64B1EF423162F8969E0BB82F01E39BCE7E17C24B2E"
+    "sourceArchiveSha256": "5D2BD3CBBBAFB4F825F494C6463CAD42986F368395B63271C39C29F5B9DFBAE1",
+    "note": "Base maps generated from Data\\patch-B.MPQ; map ids 013, 025, 042, 169, 573, 605, 606, 726, 980, 982-988 and 998 were generated in a later pass from repacked Ascension custom MPQs (MMAPS_Toolkit)."
   }
 }
